@@ -14,7 +14,7 @@ local defaults = {
 	default = { "CENTER", "CENTER", 0, -170 },
 }
 
-ACore.New(ADDON, ns, { db = "ASwingDB", defaults = defaults })
+ACore.New(ADDON, ns, { db = "ASwingDB", defaults = defaults, profile = true })
 
 ACore.Register({
 	name = "ASwing",

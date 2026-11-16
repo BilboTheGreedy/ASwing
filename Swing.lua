@@ -219,10 +219,11 @@ ns:Listen("LOGIN", function()
 	nextMelee = names(NEXT_MELEE)
 	rangedSpells = names(RANGED)
 
-	ns:On("COMBAT_LOG_EVENT_UNFILTERED", function()
-		if not CombatLogGetCurrentEventInfo then return end
-		pcall(function() fromLog(CombatLogGetCurrentEventInfo()) end)
-	end)
+	if CombatLogGetCurrentEventInfo and not C_DamageMeter then
+		ns:On("COMBAT_LOG_EVENT_UNFILTERED", function()
+			pcall(function() fromLog(CombatLogGetCurrentEventInfo()) end)
+		end)
+	end
 
 	ns:On("PLAYER_ENTER_COMBAT", function()
 		state.attacking = true
