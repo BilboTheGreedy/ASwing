@@ -1,0 +1,12 @@
+## Interface: 16001
+## Title: ASwing
+## Notes: Swing timer for melee, ranged and wand attacks
+## Version: 0.1.0
+## Category: Combat
+## IconTexture: Interface\Icons\Ability_MeleeDamage
+## Dependencies: ACore
+## SavedVariables: ASwingDB
+
+Core.lua
+Swing.lua
+Bars.lua
