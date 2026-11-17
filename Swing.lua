@@ -12,7 +12,6 @@ local state = {
 	autorepeat = false,
 	combat = false,
 	casting = false,
-	logSeen = 0,
 }
 local nextMelee, rangedSpells
 
@@ -21,26 +20,34 @@ ns.swings = swings
 ns.state = state
 
 local function num(v)
-	if type(v) ~= "number" or IsSecret(v) then return nil end
+	if IsSecret(v) or type(v) ~= "number" then return nil end
 	if v <= 0 then return nil end
 	return v
 end
 
 local function plain(v)
-	if v == nil or IsSecret(v) then return nil end
+	if IsSecret(v) then return nil end
 	return v
+end
+
+local last = {}
+
+local function known(hand, v)
+	if IsSecret(v) then return last[hand] end
+	last[hand] = num(v)
+	return last[hand]
 end
 
 function ns.Speed(hand)
 	if hand == "ranged" then
 		if not UnitRangedDamage then return nil end
-		return num((UnitRangedDamage("player")))
+		return known(hand, (UnitRangedDamage("player")))
 	elseif hand == "target" then
-		return num((UnitAttackSpeed("target")))
+		return known(hand, (UnitAttackSpeed("target")))
 	end
 	local main, off = UnitAttackSpeed("player")
-	if hand == "off" then return num(off) end
-	return num(main)
+	if hand == "off" then return known(hand, off) end
+	return known(hand, main)
 end
 
 local function changed()
@@ -62,10 +69,6 @@ function ns.Start(hand, estimated)
 	end
 	swings[hand] = { start = GetTime(), dur = speed, est = estimated and true or false }
 	changed()
-end
-
-function ns.LogActive()
-	return state.logSeen > 0 and GetTime() - state.logSeen < 15
 end
 
 local function spellName(id)
@@ -147,61 +150,39 @@ local function targetHint()
 	end
 end
 
-local function fromLog(_, sub, _, src, _, _, _, dst, _, _, _, a12, a13, ...)
-	sub, src, dst = plain(sub), plain(src), plain(dst)
-	if not sub or not src then return end
-	local me = UnitGUID("player")
-	local target = UnitExists and UnitExists("target") and plain(UnitGUID("target"))
-	if src ~= me and dst ~= me then return end
-	state.logSeen = GetTime()
-	if sub == "SWING_DAMAGE" or sub == "SWING_MISSED" then
-		local offhand
-		if sub == "SWING_DAMAGE" then
-			offhand = plain(select(8, ...))
-		else
-			offhand = plain(a13)
-		end
-		if src == me then
-			ns.Start(offhand and "off" or "main", false)
-		elseif dst == me then
-			if sub == "SWING_MISSED" and plain(a12) == "PARRY" then parryHaste() end
-			if target and src == target then ns.Start("target", false) end
-		end
-	elseif (sub == "SPELL_DAMAGE" or sub == "SPELL_MISSED") and src == me then
-		if isSpell(nextMelee, a12) or (plain(a13) and nextMelee[plain(a13)]) then ns.Start("main", false) end
-	end
+local function same(a, b)
+	if IsSecret(a) or IsSecret(b) then return true end
+	if a == nil or b == nil then return true end
+	return a == b
 end
-ns.FromLog = fromLog
 
 local function resume()
 	state.casting = false
+	state.castID = nil
 	if state.attacking then
-		ns.Start("main", not ns.LogActive())
-		ns.Start("off", not ns.LogActive())
+		ns.Start("main", true)
+		ns.Start("off", true)
 	end
+	if state.autorepeat then ns.Start("ranged", true) end
 end
 
 function ns.Tick()
 	local t = GetTime()
 	local dirty = false
-	local log = ns.LogActive()
 	for _, hand in ipairs(HANDS) do
 		local s = swings[hand]
 		if s and t >= s.start + s.dur then
 			local melee = hand == "main" or hand == "off"
 			local speed = ns.Speed(hand)
-			if melee and speed and state.attacking and not state.casting and not log then
+			if melee and speed and state.attacking and not state.casting then
 				local late = t - (s.start + s.dur)
 				s.dur = speed
 				s.start = late < speed and t - late or t
 				s.est = true
 				dirty = true
 			else
-				local grace = (melee and log and state.attacking) and 1.5 or 0
-				if t >= s.start + s.dur + grace then
-					swings[hand] = nil
-					dirty = true
-				end
+				swings[hand] = nil
+				dirty = true
 			end
 		end
 	end
@@ -219,15 +200,9 @@ ns:Listen("LOGIN", function()
 	nextMelee = names(NEXT_MELEE)
 	rangedSpells = names(RANGED)
 
-	if CombatLogGetCurrentEventInfo and not C_DamageMeter then
-		ns:On("COMBAT_LOG_EVENT_UNFILTERED", function()
-			pcall(function() fromLog(CombatLogGetCurrentEventInfo()) end)
-		end)
-	end
-
 	ns:On("PLAYER_ENTER_COMBAT", function()
 		state.attacking = true
-		if not ns.LogActive() and not state.casting then
+		if not state.casting then
 			ns.Start("main", true)
 			ns.Start("off", true)
 		end
@@ -273,35 +248,36 @@ ns:Listen("LOGIN", function()
 		if state.autorepeat then ns.Start("ranged", true) end
 	end)
 	ns:On("PLAYER_TARGET_CHANGED", function()
+		last.target = nil
 		ns.Stop("target")
 	end)
 
-	ns:On("UNIT_SPELLCAST_START", function(unit)
-		if unit ~= "player" then return end
+	ns:On("UNIT_SPELLCAST_START", function(unit, castID, spell)
+		if unit ~= "player" or isSpell(rangedSpells, spell) then return end
 		state.casting = true
+		state.castID = castID
 		swings.main = nil
 		swings.off = nil
 		changed()
 	end)
-	ns:On("UNIT_SPELLCAST_SUCCEEDED", function(unit, _, spell)
+	ns:On("UNIT_SPELLCAST_SUCCEEDED", function(unit, castID, spell)
 		if unit ~= "player" then return end
-		if state.casting then
-			resume()
-		elseif isSpell(rangedSpells, spell) then
+		if isSpell(rangedSpells, spell) then
 			ns.Start("ranged", false)
+		elseif state.casting then
+			if same(state.castID, castID) then resume() end
 		elseif isSpell(nextMelee, spell) then
 			ns.Start("main", false)
 		end
 	end)
-	local function ended(unit)
-		if unit == "player" and state.casting then resume() end
+	local function ended(unit, castID)
+		if unit == "player" and state.casting and same(state.castID, castID) then resume() end
 	end
 	ns:On("UNIT_SPELLCAST_STOP", ended)
 	ns:On("UNIT_SPELLCAST_FAILED", ended)
 	ns:On("UNIT_SPELLCAST_INTERRUPTED", ended)
 
 	ns:On("UNIT_COMBAT", function(unit, action, _, _, school)
-		if ns.LogActive() then return end
 		action = plain(action)
 		if not action or not MELEE_HIT[action] then return end
 		school = plain(school)
